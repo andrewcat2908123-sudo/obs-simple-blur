@@ -24,6 +24,70 @@ OBS_MODULE_USE_DEFAULT_LOCALE("obs-simple-blur", "en-US")
 /* Shared blur core                                                    */
 /* ------------------------------------------------------------------ */
 
+/* Shader is embedded so the plugin does not depend on data/effects/ being installed */
+static const char *blur_effect_source =
+	"// Separable gaussian blur. Direction is set from C via texel_step:\n"
+	"// (1/width, 0) for the horizontal pass, (0, 1/height) for the vertical one.\n"
+	"\n"
+	"uniform float4x4 ViewProj;\n"
+	"uniform texture2d image;\n"
+	"uniform float2 texel_step;\n"
+	"uniform float radius; // in pixels\n"
+	"\n"
+	"sampler_state textureSampler {\n"
+	"	Filter    = Linear;\n"
+	"	AddressU  = Clamp;\n"
+	"	AddressV  = Clamp;\n"
+	"};\n"
+	"\n"
+	"struct VertData {\n"
+	"	float4 pos : POSITION;\n"
+	"	float2 uv  : TEXCOORD0;\n"
+	"};\n"
+	"\n"
+	"VertData VSDefault(VertData v_in)\n"
+	"{\n"
+	"	VertData vert_out;\n"
+	"	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);\n"
+	"	vert_out.uv  = v_in.uv;\n"
+	"	return vert_out;\n"
+	"}\n"
+	"\n"
+	"float4 PSBlur(VertData v_in) : TARGET\n"
+	"{\n"
+	"	// Work in premultiplied alpha so transparent edges don't turn dark\n"
+	"	float4 c = image.Sample(textureSampler, v_in.uv);\n"
+	"	float4 sum = float4(c.rgb * c.a, c.a);\n"
+	"	float wsum = 1.0;\n"
+	"\n"
+	"	for (int i = 1; i <= 16; i++) {\n"
+	"		float t = (float)i / 16.0;\n"
+	"		float w = exp(-t * t * 4.5); // sigma ~= radius / 3\n"
+	"		float2 o = texel_step * radius * t;\n"
+	"\n"
+	"		float4 a = image.Sample(textureSampler, v_in.uv + o);\n"
+	"		float4 b = image.Sample(textureSampler, v_in.uv - o);\n"
+	"\n"
+	"		sum += float4(a.rgb * a.a, a.a) * w;\n"
+	"		sum += float4(b.rgb * b.a, b.a) * w;\n"
+	"		wsum += 2.0 * w;\n"
+	"	}\n"
+	"\n"
+	"	float alpha = sum.a / wsum;\n"
+	"	float3 rgb  = sum.rgb / max(sum.a, 0.00001);\n"
+	"	return float4(rgb, alpha);\n"
+	"}\n"
+	"\n"
+	"technique Draw\n"
+	"{\n"
+	"	pass\n"
+	"	{\n"
+	"		vertex_shader = VSDefault(v_in);\n"
+	"		pixel_shader  = PSBlur(v_in);\n"
+	"	}\n"
+	"}\n"
+	"\n";
+
 struct blur_core {
 	gs_effect_t *effect;
 	gs_eparam_t *p_image;
@@ -35,23 +99,21 @@ struct blur_core {
 
 static bool core_init(struct blur_core *c)
 {
-	char *path = obs_module_file("effects/blur.effect");
 	char *err = NULL;
 
 	obs_enter_graphics();
-	c->effect = gs_effect_create_from_file(path, &err);
+	c->effect = gs_effect_create(blur_effect_source, "blur.effect", &err);
 	if (c->effect) {
 		c->p_image = gs_effect_get_param_by_name(c->effect, "image");
 		c->p_step = gs_effect_get_param_by_name(c->effect, "texel_step");
 		c->p_radius = gs_effect_get_param_by_name(c->effect, "radius");
 	} else {
-		blog(LOG_ERROR, "[obs-simple-blur] failed to load effect: %s", err ? err : "unknown error");
+		blog(LOG_ERROR, "[obs-simple-blur] failed to compile effect: %s", err ? err : "unknown error");
 	}
 	c->tex_a = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 	c->tex_b = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 	obs_leave_graphics();
 
-	bfree(path);
 	bfree(err);
 	return c->effect != NULL;
 }
