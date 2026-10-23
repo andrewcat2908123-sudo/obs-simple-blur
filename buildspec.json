@@ -36,7 +36,7 @@
             "bundleId": "com.example.plugintemplate-for-obs"
         }
     },
-    "name": "plugintemplate-for-obs",
+    "name": "obs-simple-blur",
     "displayName": "Plugin Template for OBS",
     "version": "1.0.0",
     "author": "Your Name Here",

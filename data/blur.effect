@@ -1,0 +1,60 @@
+// Separable gaussian blur. Direction is set from C via texel_step:
+// (1/width, 0) for the horizontal pass, (0, 1/height) for the vertical one.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float2 texel_step;
+uniform float radius; // in pixels
+
+sampler_state textureSampler {
+	Filter    = Linear;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
+}
+
+float4 PSBlur(VertData v_in) : TARGET
+{
+	// Work in premultiplied alpha so transparent edges don't turn dark
+	float4 c = image.Sample(textureSampler, v_in.uv);
+	float4 sum = float4(c.rgb * c.a, c.a);
+	float wsum = 1.0;
+
+	for (int i = 1; i <= 16; i++) {
+		float t = (float)i / 16.0;
+		float w = exp(-t * t * 4.5); // sigma ~= radius / 3
+		float2 o = texel_step * radius * t;
+
+		float4 a = image.Sample(textureSampler, v_in.uv + o);
+		float4 b = image.Sample(textureSampler, v_in.uv - o);
+
+		sum += float4(a.rgb * a.a, a.a) * w;
+		sum += float4(b.rgb * b.a, b.a) * w;
+		wsum += 2.0 * w;
+	}
+
+	float alpha = sum.a / wsum;
+	float3 rgb  = sum.rgb / max(sum.a, 0.00001);
+	return float4(rgb, alpha);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSBlur(v_in);
+	}
+}
